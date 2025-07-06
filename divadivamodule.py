@@ -11,7 +11,14 @@ from PIL import Image, ImageTk
 
 # --- Default app data directory for everyone ---
 def get_app_dir():
-    return os.path.expanduser("~/.divadivamodule")
+    # On Windows, use LOCALAPPDATA for application-specific data
+    # Example: C:\Users\YourUsername\AppData\Local\DivaDivaModule
+    app_data_path = os.getenv('LOCALAPPDATA')
+    if app_data_path:
+        return os.path.join(app_data_path, "DivaDivaModule")
+    else:
+        # Fallback for systems where LOCALAPPDATA might not be set (unlikely on Windows)
+        return os.path.expanduser("~/DivaDivaModule")
 
 APP_DIR = get_app_dir()
 NOTES_CSV = os.path.join(APP_DIR, "notes.csv")
@@ -20,6 +27,10 @@ SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 IMAGES_FOLDER = os.path.join(APP_DIR, "images")
 # Define a dedicated items folder within the app directory
 ITEMS_FOLDER = os.path.join(APP_DIR, "items") # Added ITEMS_FOLDER
+
+# Define the OLD_APP_DIR for migration purposes (Linux-style path)
+OLD_APP_DIR = os.path.expanduser("~/.divadivamodule")
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STARTER_MODULES_CSV = os.path.join(SCRIPT_DIR, "modules_data.csv")
@@ -221,6 +232,73 @@ def ensure_app_structure():
     os.makedirs(IMAGES_FOLDER, exist_ok=True)
     os.makedirs(ITEMS_FOLDER, exist_ok=True) # Ensure ITEMS_FOLDER exists
 
+    # --- Migration Logic ---
+    # Check if the old Linux-style app directory exists AND
+    # if the new Windows-style app directory is empty or lacks key files
+    if os.path.exists(OLD_APP_DIR) and os.path.isdir(OLD_APP_DIR):
+        # Check if new directory needs population (e.g., modules_data.csv is missing)
+        new_app_dir_needs_population = not (
+            os.path.exists(MODULES_CSV) and
+            os.path.getsize(MODULES_CSV) > 0 and # Check if it's not just an empty file
+            os.path.exists(NOTES_CSV)
+        )
+
+        if new_app_dir_needs_population:
+            try:
+                # Get the contents of the old directory
+                old_dir_contents = os.listdir(OLD_APP_DIR)
+                if old_dir_contents:
+                    print(f"Migrating data from old app directory: {OLD_APP_DIR} to {APP_DIR}")
+                    for item_name in old_dir_contents:
+                        src_path = os.path.join(OLD_APP_DIR, item_name)
+                        dest_path = os.path.join(APP_DIR, item_name)
+
+                        if os.path.isdir(src_path):
+                            if os.path.exists(dest_path):
+                                print(f"Warning: Directory '{dest_path}' already exists. Skipping move for it.")
+                                # If the target directory exists, consider merging or skipping
+                                # For simplicity, if target exists, we'll try to move contents later.
+                                # Or, for this migration, we assume new dir is empty of old data.
+                                # So, if a folder like 'images' already exists, we copy contents.
+                                for f_name in os.listdir(src_path):
+                                    src_file = os.path.join(src_path, f_name)
+                                    dest_file = os.path.join(dest_path, f_name)
+                                    if os.path.isfile(src_file) and not os.path.exists(dest_file):
+                                        shutil.copy2(src_file, dest_file) # copy2 preserves metadata
+                                    elif os.path.isdir(src_file) and not os.path.exists(dest_file):
+                                        shutil.copytree(src_file, dest_file)
+                            else:
+                                shutil.move(src_path, dest_path)
+                                print(f"Moved directory: {src_path} to {dest_path}")
+                        else:
+                            if not os.path.exists(dest_path):
+                                shutil.move(src_path, dest_path)
+                                print(f"Moved file: {src_path} to {dest_path}")
+                            else:
+                                print(f"Warning: File '{dest_path}' already exists. Skipping move for it.")
+                    
+                    # Optionally, remove the old directory after migration
+                    try:
+                        shutil.rmtree(OLD_APP_DIR)
+                        print(f"Removed old app directory: {OLD_APP_DIR}")
+                    except OSError as e:
+                        print(f"Error removing old app directory {OLD_APP_DIR}: {e}")
+                    messagebox.showinfo("Migration Complete", "Your data from the old app directory has been moved to the new Windows location.")
+                else:
+                    print(f"Old app directory {OLD_APP_DIR} exists but is empty. No migration needed.")
+            except Exception as e:
+                print(f"Error during migration: {e}")
+                messagebox.showerror("Migration Error", f"An error occurred during data migration:\n{e}\n"
+                                     "Please manually move your data from:\n"
+                                     f"{OLD_APP_DIR}\n"
+                                     "to:\n"
+                                     f"{APP_DIR}")
+        else:
+            print(f"New app directory {APP_DIR} already contains data. Skipping migration from {OLD_APP_DIR}.")
+    else:
+        print(f"Old app directory {OLD_APP_DIR} does not exist or is not a directory. No migration needed.")
+
+    # --- Standard App Structure Creation (for new installations or after migration) ---
     # Copy starter modules_data.csv if it doesn't exist in APP_DIR
     if not os.path.exists(MODULES_CSV):
         if os.path.exists(STARTER_MODULES_CSV):
@@ -294,7 +372,7 @@ def first_launch_prompt():
 
     win = tk.Toplevel(temp_root)
     win.title("Welcome to DivaDivaModule!")
-    win.geometry("440x300")
+    win.geometry("440x250") # Adjusted height as Wine Prefix field is removed
     win.grab_set()
     win.resizable(False, False)
     center_window(win)
@@ -305,16 +383,11 @@ def first_launch_prompt():
     tk.Label(frame, text="Let's set up your environment.").pack(pady=(0, 18))
 
     exe_var = tk.StringVar()
-    wine_var = tk.StringVar()
 
     def browse_exe():
         path = filedialog.askopenfilename(title="Select MikuMikuModel.exe", filetypes=[("Exe files", "*.exe")])
         if path:
             exe_var.set(path)
-    def browse_wine():
-        path = filedialog.askdirectory(title="Select .wine prefix (optional)")
-        if path:
-            wine_var.set(path)
 
     exe_row = tk.Frame(frame)
     exe_row.pack(fill='x', pady=6)
@@ -323,16 +396,10 @@ def first_launch_prompt():
     exe_entry.pack(side='left', fill='x', expand=True)
     tk.Button(exe_row, text="Browse", command=browse_exe).pack(side='left')
 
-    wine_row = tk.Frame(frame)
-    wine_row.pack(fill='x', pady=6)
-    tk.Label(wine_row, text="Wine Prefix (optional):", width=18, anchor='w').pack(side='left')
-    wine_entry = tk.Entry(wine_row, textvariable=wine_var, width=38)
-    wine_entry.pack(side='left', fill='x', expand=True)
-    tk.Button(wine_row, text="Browse", command=browse_wine).pack(side='left')
+    # Wine Prefix field removed for Windows
 
     def confirm():
         exe = exe_var.get().strip()
-        wine = wine_var.get().strip()
 
         if not exe or not os.path.isfile(exe):
             messagebox.showerror("Setup Error", "Please select a valid MikuMikuModel.exe.")
@@ -340,7 +407,6 @@ def first_launch_prompt():
 
         settings_to_save = {
             "mikumikumodel_exe": exe,
-            "wineprefix": wine,
             "theme": "light"
         }
 
@@ -420,14 +486,12 @@ def display_items_tutorial(parent_window):
     tutorial_win.resizable(False, False)
     center_window(tutorial_win)
 
-    # FIX: Changed to global function apply_theme_to_window
     apply_theme_to_window(tutorial_win)
 
     frame = tk.Frame(tutorial_win)
     frame.pack(padx=20, pady=20, fill='both', expand=True)
     theme_manager.apply_theme_to_widget(frame, 'frame')
 
-    # UPDATED MESSAGE
     tk.Label(
         frame,
         text="Hey there! Your 'items' folder is empty. For DivaDivaModule to work properly, you need to put all the character-specific .farc files from your game's archives into this folder. Things like 'cmnitms' or 'hnditms' aren't needed, just the ones for characters. If you try to open an item without these files, it won't work. Hooray!",
@@ -444,7 +508,6 @@ def display_items_tutorial(parent_window):
     theme_manager.apply_theme_to_widget(ok_button, 'button')
 
     tutorial_win.protocol("WM_DELETE_WINDOW", close_tutorial)
-
     tutorial_win.wait_window(tutorial_win) # Wait for this window to be closed
 
 
@@ -575,7 +638,6 @@ def open_item_in_mikumikumodel(object_name):
     # Reload settings to ensure we have the latest paths
     current_settings = load_settings()
     mikumikumodel_exe = current_settings.get("mikumikumodel_exe", "")
-    wineprefix = current_settings.get("wineprefix", "")
 
     if not mikumikumodel_exe or not os.path.isfile(mikumikumodel_exe):
         messagebox.showerror("Error", "MikuMikuModel.exe path is not set or invalid in settings. Please configure it in File -> Settings.")
@@ -592,13 +654,9 @@ def open_item_in_mikumikumodel(object_name):
     for fname in item_files:
         if fname.lower() == target:
             filepath = os.path.abspath(os.path.join(search_dir, fname))
-            filepath_win = f"Z:{filepath}" # Adjust for Wine path mapping if necessary
             try:
-                command = []
-                if wineprefix:
-                    command.extend(["env", f"WINEPREFIX={wineprefix}"])
-                command.extend(["wine", mikumikumodel_exe, filepath_win])
-                subprocess.Popen(command)
+                # Directly open the .exe with the file on Windows
+                subprocess.Popen([mikumikumodel_exe, filepath])
             except Exception as e:
                 messagebox.showerror("Error", f"Could not open file:\n{filepath}\n\n{e}")
             return
@@ -627,6 +685,7 @@ def load_notes():
     return notes, order
 
 def save_all_notes(notes):
+    """Saves all notes from the current_notes_data dictionary to NOTES_CSV."""
     os.makedirs(os.path.dirname(NOTES_CSV), exist_ok=True)
     with open(NOTES_CSV, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
@@ -637,7 +696,7 @@ def save_all_notes(notes):
 def open_settings(parent):
     settings_win = tk.Toplevel(parent)
     settings_win.title("Settings")
-    settings_win.geometry("500x380") # Increased height to accommodate new fields
+    settings_win.geometry("500x300") # Adjusted height for removal of Wine Prefix field
     settings_win.resizable(False, False)
     settings_win.grab_set()
     apply_theme_to_window(settings_win)
@@ -670,22 +729,7 @@ def open_settings(parent):
             exe_var.set(path)
     tk.Button(exe_path_frame, text="Browse", command=browse_exe_path).pack(side='right')
 
-    # --- Wine Prefix Path Setting ---
-    wine_path_frame = tk.Frame(main_frame)
-    wine_path_frame.pack(fill='x', padx=20, pady=5)
-    theme_manager.apply_theme_to_widget(wine_path_frame, 'frame')
-
-    tk.Label(wine_path_frame, text="Wine Prefix Path (Optional):", anchor='w').pack(fill='x')
-    wine_var = tk.StringVar(value=current_settings.get("wineprefix", ""))
-    wine_entry = tk.Entry(wine_path_frame, textvariable=wine_var)
-    wine_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
-    theme_manager.apply_theme_to_widget(wine_entry, 'entry')
-
-    def browse_wine_path():
-        path = filedialog.askdirectory(title="Select Wine Prefix Directory")
-        if path:
-            wine_var.set(path)
-    tk.Button(wine_path_frame, text="Browse", command=browse_wine_path).pack(side='right')
+    # Wine Prefix Path Setting removed for Windows
 
     # --- Separator ---
     ttk.Separator(main_frame, orient='horizontal').pack(fill='x', padx=20, pady=10)
@@ -740,7 +784,6 @@ def open_settings(parent):
     def save_current_settings():
         updated_settings = {
             "mikumikumodel_exe": exe_var.get().strip(),
-            "wineprefix": wine_var.get().strip(),
             "theme": theme_manager.current_theme # Ensure current theme is also saved
         }
         try:
@@ -748,7 +791,6 @@ def open_settings(parent):
             with open(SETTINGS_FILE, 'w') as f:
                 json.dump(updated_settings, f, indent=4)
             messagebox.showinfo("Settings Saved", "Application settings have been saved.")
-            # Reload settings globally in main app if necessary (e.g., if mikumikumodel_exe changed)
             # For this simple setup, reloading `MIKUMIKUMODEL_EXE` and `WINEPREFIX` inside
             # `open_item_in_mikumikumodel` on each call is safer.
         except Exception as e:
@@ -766,7 +808,8 @@ def open_settings(parent):
         theme_var.set('Light') # Update radio button
         refresh_all_themes() # Apply theme change
         exe_var.set("") # Clear MMM path
-        wine_var.set("") # Clear Wine prefix
+        # Clear Wine prefix - removed
+
         # Reset other settings in the file
         try:
             current_settings_data = {}
@@ -775,7 +818,6 @@ def open_settings(parent):
                     current_settings_data = json.load(f)
 
             current_settings_data['mikumikumodel_exe'] = ""
-            current_settings_data['wineprefix'] = ""
             current_settings_data['theme'] = 'light' # Default theme
             os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
             with open(SETTINGS_FILE, 'w') as f:
@@ -797,6 +839,299 @@ def open_settings(parent):
     )
     close_btn.pack(side='right', padx=(5, 0))
     theme_manager.apply_theme_to_widget(close_btn, 'button')
+
+def open_notes_view(parent, modules):
+    notes_win = tk.Toplevel(parent)
+    notes_win.title("FrankenNotes")
+    notes_win.geometry("800x600")
+    notes_win.grab_set()
+    apply_theme_to_window(notes_win)
+    center_window(notes_win)
+
+    main_frame = tk.Frame(notes_win)
+    main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+    theme_manager.apply_theme_to_widget(main_frame, 'frame')
+
+    current_notes_data, notes_order = load_notes()
+
+    def update_notes_listbox_and_details():
+        # Save current selections
+        selected_note_indices = notes_listbox.curselection()
+        selected_note_index = selected_note_indices[0] if selected_note_indices else 0
+        selected_item_iid = details_tree.focus()
+
+        # Repopulate the notes listbox
+        notes_listbox.delete(0, tk.END)
+        for name in notes_order:
+            notes_listbox.insert(tk.END, name)
+
+        # Restore note selection or select the first item
+        if notes_order:
+            new_selection = min(selected_note_index, len(notes_order) - 1)
+            notes_listbox.selection_set(new_selection)
+            notes_listbox.activate(new_selection)
+            notes_listbox.see(new_selection)
+
+        # Update details based on selection
+        update_details_tree()
+
+        # Restore item selection
+        if selected_item_iid and details_tree.exists(selected_item_iid):
+            details_tree.selection_set(selected_item_iid)
+            details_tree.focus(selected_item_iid)
+
+        # Update button states
+        update_button_states()
+
+    def update_details_tree():
+        # Clear previous details
+        for item in details_tree.get_children():
+            details_tree.delete(item)
+
+        selected_indices = notes_listbox.curselection()
+        if selected_indices:
+            selected_name = notes_listbox.get(selected_indices[0])
+            note_name_label.config(text=f"Note: {selected_name}")
+            if selected_name in current_notes_data:
+                for item_data in current_notes_data[selected_name]:
+                    details_tree.insert("", tk.END, values=item_data)
+        else:
+            note_name_label.config(text="Note: (Select a note)")
+        update_button_states()
+
+    def update_button_states(*args):
+        note_selected = bool(notes_listbox.curselection())
+        item_selected = bool(details_tree.selection())
+
+        add_item_btn.config(state=tk.NORMAL if note_selected else tk.DISABLED)
+        edit_item_btn.config(state=tk.NORMAL if item_selected else tk.DISABLED)
+        delete_item_btn.config(state=tk.NORMAL if item_selected else tk.DISABLED)
+
+    # --- Left Pane: List of Notes ---
+    notes_list_frame = tk.Frame(main_frame)
+    notes_list_frame.pack(side='left', fill='y', padx=(0, 10))
+    theme_manager.apply_theme_to_widget(notes_list_frame, 'frame')
+
+    tk.Label(notes_list_frame, text="Notes").pack(pady=(0, 5))
+    notes_listbox = tk.Listbox(notes_list_frame, width=30)
+    notes_listbox.pack(expand=True, fill='y')
+    theme_manager.apply_theme_to_widget(notes_listbox, 'listbox')
+    notes_listbox.bind("<<ListboxSelect>>", lambda e: update_details_tree())
+
+    # --- Right Pane: Note Details ---
+    details_frame = tk.Frame(main_frame)
+    details_frame.pack(side='right', fill='both', expand=True)
+    theme_manager.apply_theme_to_widget(details_frame, 'frame')
+
+    note_name_label = tk.Label(details_frame, text="Note: (Select a note)")
+    note_name_label.pack(pady=(0, 5))
+
+    details_tree = ttk.Treeview(
+        details_frame,
+        columns=("Module ID", "Item ID", "Description"),
+        show="headings"
+    )
+    details_tree.heading("Module ID", text="Module ID")
+    details_tree.heading("Item ID", text="Item ID")
+    details_tree.heading("Description", text="Description")
+    details_tree.column("Module ID", width=100, stretch=tk.NO)
+    details_tree.column("Item ID", width=100, stretch=tk.NO)
+    details_tree.column("Description", width=300, stretch=tk.YES)
+    details_tree.pack(fill='both', expand=True)
+    theme_manager.apply_theme_to_treeview(details_tree)
+    details_tree.bind("<<TreeviewSelect>>", update_button_states)
+
+    def open_selected_module_item(event=None):
+        selected_iid = details_tree.focus()
+        if not selected_iid: return
+        values = details_tree.item(selected_iid, 'values')
+        if not values: return
+        object_name_found = None
+        module = modules.get(values[0])
+        if module:
+            for item in module.get('Items', []):
+                if item.get('Item ID') == values[1]:
+                    object_name_found = item.get('Object(s)')
+                    break
+        if object_name_found:
+            open_item_in_mikumikumodel(object_name_found)
+        else:
+            messagebox.showwarning("Not Found", "Could not find object name for this item.", parent=notes_win)
+
+    details_tree.bind("<Double-1>", open_selected_module_item)
+
+    def open_note_item_dialog(mode='add', note_name_prefill="", item_data_prefill=None, item_index=None):
+        dialog_win = tk.Toplevel(notes_win)
+        dialog_win.title("Edit Item" if mode == 'edit' else "Add Item")
+        dialog_win.grab_set()
+        dialog_win.resizable(False, False)
+        center_window(dialog_win)
+        apply_theme_to_window(dialog_win)
+
+        frame = tk.Frame(dialog_win)
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+
+        # Note Name
+        tk.Label(frame, text="Note Name:").pack(anchor='w')
+        note_name_var = tk.StringVar(value=note_name_prefill)
+        note_name_entry = tk.Entry(frame, textvariable=note_name_var)
+        note_name_entry.pack(fill='x', pady=(0, 10))
+        if mode == 'edit' or note_name_prefill:
+            note_name_entry.config(state=tk.DISABLED)
+
+        # Module
+        tk.Label(frame, text="Module:").pack(anchor='w')
+        module_options = []
+        module_id_map = {}
+        for mid, mdata in modules.items():
+            display = f"[{mid}] {mdata['Name (EN)']} ({mdata['Character']})"
+            module_options.append(display)
+            module_id_map[display] = mid
+
+        # *** FIX: Sort numerically ***
+        module_options.sort(key=lambda name: int(name.split(']')[0].strip('[m')))
+
+        module_var = tk.StringVar()
+        module_combobox = ttk.Combobox(frame, textvariable=module_var, values=module_options, state='readonly')
+        module_combobox.pack(fill='x', pady=(0, 10))
+
+        # Item
+        tk.Label(frame, text="Item:").pack(anchor='w')
+        item_var = tk.StringVar()
+        item_combobox = ttk.Combobox(frame, textvariable=item_var, state='disabled')
+        item_combobox.pack(fill='x', pady=(0, 10))
+        item_id_map = {}
+
+        def update_item_options(*args):
+            nonlocal item_id_map
+            selected_module_id = module_id_map.get(module_var.get())
+            item_id_map = {}
+            item_options = []
+            if selected_module_id and selected_module_id in modules:
+                for item in modules[selected_module_id]['Items']:
+                    display = f"[{item['Item ID']}] {item['Object(s)']}"
+                    item_options.append(display)
+                    item_id_map[display] = item['Item ID']
+                item_combobox.config(state='readonly', values=item_options)
+            else:
+                item_combobox.config(state='disabled', values=[])
+            item_combobox.set('')
+
+        module_combobox.bind("<<ComboboxSelected>>", update_item_options)
+
+        # Description
+        tk.Label(frame, text="Description:").pack(anchor='w')
+        desc_text = tk.Text(frame, height=5, wrap='word')
+        desc_text.pack(fill='both', expand=True, pady=(0, 10))
+
+        # Pre-fill for Edit mode
+        if mode == 'edit' and item_data_prefill:
+            mod_id, item_id, desc = item_data_prefill
+            # Find and set module display name
+            for display_name, m_id in module_id_map.items():
+                if m_id == mod_id:
+                    module_var.set(display_name)
+                    update_item_options()
+                    break
+            # Find and set item display name
+            for display_name, i_id in item_id_map.items():
+                if i_id == item_id:
+                    item_var.set(display_name)
+                    break
+            desc_text.insert("1.0", desc)
+
+        def on_save():
+            name = note_name_var.get().strip()
+            mod_id = module_id_map.get(module_var.get())
+            item_id = item_id_map.get(item_var.get())
+            desc = desc_text.get("1.0", tk.END).strip()
+
+            if not all([name, mod_id, item_id, desc]):
+                messagebox.showwarning("Input Error", "All fields are required.", parent=dialog_win)
+                return
+
+            if mode == 'add':
+                if name not in current_notes_data:
+                    current_notes_data[name] = []
+                    notes_order.append(name)
+                current_notes_data[name].append((mod_id, item_id, desc))
+            elif mode == 'edit':
+                current_notes_data[name][item_index] = (mod_id, item_id, desc)
+
+            save_all_notes(current_notes_data)
+            update_notes_listbox_and_details()
+            dialog_win.destroy()
+
+        tk.Button(frame, text="Save", command=on_save).pack(side='right')
+        apply_theme_to_window(dialog_win)
+
+    def new_note_action():
+        name = simpledialog.askstring("New Note", "Enter the name for the new note:", parent=notes_win)
+        if name and name.strip():
+            name = name.strip()
+            if name in current_notes_data:
+                messagebox.showwarning("Exists", f"A note with the name '{name}' already exists.", parent=notes_win)
+            else:
+                current_notes_data[name] = []
+                notes_order.append(name)
+                save_all_notes(current_notes_data)
+                update_notes_listbox_and_details()
+                # Select the new note
+                new_index = notes_order.index(name)
+                notes_listbox.selection_clear(0, tk.END)
+                notes_listbox.selection_set(new_index)
+                update_details_tree()
+
+    def add_item_action():
+        selected_indices = notes_listbox.curselection()
+        if not selected_indices: return
+        note_name = notes_listbox.get(selected_indices[0])
+        open_note_item_dialog(mode='add', note_name_prefill=note_name)
+
+    def edit_item_action():
+        selected_item_iid = details_tree.focus()
+        selected_note_indices = notes_listbox.curselection()
+        if not selected_item_iid or not selected_note_indices: return
+
+        note_name = notes_listbox.get(selected_note_indices[0])
+        item_index = details_tree.index(selected_item_iid)
+        item_data = current_notes_data[note_name][item_index]
+        open_note_item_dialog(mode='edit', note_name_prefill=note_name, item_data_prefill=item_data, item_index=item_index)
+
+    def delete_item_action():
+        selected_item_iid = details_tree.focus()
+        selected_note_indices = notes_listbox.curselection()
+        if not selected_item_iid or not selected_note_indices: return
+
+        note_name = notes_listbox.get(selected_note_indices[0])
+        item_index = details_tree.index(selected_item_iid)
+
+        if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this item from the note?", parent=notes_win):
+            current_notes_data[note_name].pop(item_index)
+            # If the note is now empty, delete the note itself
+            if not current_notes_data[note_name]:
+                del current_notes_data[note_name]
+                notes_order.remove(note_name)
+            save_all_notes(current_notes_data)
+            update_notes_listbox_and_details()
+
+    # --- Button Bars ---
+    list_button_frame = tk.Frame(notes_list_frame)
+    list_button_frame.pack(side='bottom', fill='x', pady=(10, 0))
+    tk.Button(list_button_frame, text="New Note", command=new_note_action).pack(fill='x')
+
+    details_button_frame = tk.Frame(details_frame)
+    details_button_frame.pack(side='bottom', fill='x', pady=(10,0))
+    add_item_btn = tk.Button(details_button_frame, text="Add Item to Note", command=add_item_action)
+    add_item_btn.pack(side='left', fill='x', expand=True, padx=(0, 2))
+    edit_item_btn = tk.Button(details_button_frame, text="Edit Selected Item", command=edit_item_action)
+    edit_item_btn.pack(side='left', fill='x', expand=True, padx=2)
+    delete_item_btn = tk.Button(details_button_frame, text="Delete Selected Item", command=delete_item_action)
+    delete_item_btn.pack(side='left', fill='x', expand=True, padx=(2, 0))
+
+    # Initial population
+    update_notes_listbox_and_details()
+    apply_theme_to_window(notes_win)
 
 
 class ModuleEntry(tk.Frame):
@@ -1185,7 +1520,7 @@ def main():
     filter_menu.bind("<<ComboboxSelected>>", lambda e: populate_module_entries())
     populate_module_entries()
 
-    notes_btn = tk.Button(root, text="FrankenNotes", command=lambda: open_notes_view(modules))
+    notes_btn = tk.Button(root, text="FrankenNotes", command=lambda: open_notes_view(root, modules))
     notes_btn.pack(pady=5)
     theme_manager.apply_theme_to_widget(notes_btn, 'button')
 
