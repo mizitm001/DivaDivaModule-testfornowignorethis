@@ -30,10 +30,17 @@ jobs:
         # This assumes your divadivamodule.spec file is in the root of your repository
         run: pyinstaller divadivamodule.spec
 
+      - name: List contents of dist directory
+        # This step will show you exactly what's inside the 'dist' folder
+        # Look for the output here to confirm the exact path of your executable or folder
+        run: dir dist /s # For Windows runners, /s lists subdirectories too
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: divadivamodule-windows-exe
-          path: dist/divadivamodule.exe # Path to your compiled executable
-          # If you ended up with a --onedir build, you'd upload the whole folder:
-          # path: dist/divadivamodule/ # Example if it was a folder
+          # IMPORTANT: Adjust 'path:' based on the output of the 'List contents' step
+          # If PyInstaller creates a 'divadivamodule' folder inside 'dist', use the path below:
+          path: dist/divadivamodule/
+          # If it somehow creates just the .exe directly in 'dist', use this instead (less common for apps with data):
+          # path: dist/divadivamodule.exe
